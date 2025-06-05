@@ -16,6 +16,7 @@ class Engine:
         gpt_ckpt_path: str,
         shape_ckpt_path: str,
         device: torch.device,
+        torch_compile: str = None,
     ):
         """
         Initializes the inference engine with the given configuration and checkpoint paths.
@@ -24,6 +25,7 @@ class Engine:
             gpt_ckpt_path (str): Path to the GPT model checkpoint file.
             shape_ckpt_path (str): Path to the shape model checkpoint file.
             device (torch.device): The device to run the models on (e.g., 'cpu' or 'cuda').
+            torch_compile (str, optional): The torch compile backend to use.
         Attributes:
             cfg (dict): Loaded configuration from the config file.
             device (torch.device): The device to run the models on.
@@ -75,6 +77,11 @@ class Engine:
         self.max_new_tokens = self.shape_model.cfg.num_encoder_latents
         self.min_id = 0
         self.max_id = self.shape_model.cfg.num_codes
+
+        if torch_compile is not None:
+            self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
+            self.shape_model = torch.compile(self.shape_model, backend=torch_compile)
+            self.text_model = torch.compile(self.text_model, backend=torch_compile)
 
     @torch.inference_mode()
     def prepare_inputs(self, prompts: list[str], guidance_scale: float):
@@ -294,6 +301,7 @@ class EngineFast(Engine):
         gpt_ckpt_path: str,
         shape_ckpt_path: str,
         device: torch.device,
+        torch_compile: str = None,
     ):
         """
         Initializes the inference engine with the given configuration and checkpoint paths.
@@ -302,13 +310,14 @@ class EngineFast(Engine):
             gpt_ckpt_path (str): Path to the GPT checkpoint file.
             shape_ckpt_path (str): Path to the shape checkpoint file.
             device (torch.device): The device to run the inference on (e.g., CPU or CUDA).
+            torch_compile (str, optional): The torch compile backend to use.
         """
 
         assert (
             device.type == "cuda"
         ), "EngineFast is only supported on cuda devices, please use Engine on non-cuda devices"
 
-        super().__init__(config_path, gpt_ckpt_path, shape_ckpt_path, device)
+        super().__init__(config_path, gpt_ckpt_path, shape_ckpt_path, device, torch_compile)
 
         # CUDA Graph params
         self.graph = torch.cuda.CUDAGraph()

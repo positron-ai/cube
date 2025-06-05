@@ -111,6 +111,12 @@ if __name__ == "__main__":
         default=8.0,
         help="Resolution base for the shape decoder.",
     )
+    parser.add_argument(
+        "--torch-compile",
+        type=str,
+        default=None,
+        help="PyTorch compiler backend to use for model compilation (e.g., 'inductor', 'aot_eager'). If not specified, models will not be compiled.",
+    )
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     device = select_device()
@@ -121,12 +127,20 @@ if __name__ == "__main__":
             "Using cuda graphs, this will take some time to warmup and capture the graph."
         )
         engine = EngineFast(
-            args.config_path, args.gpt_ckpt_path, args.shape_ckpt_path, device=device
+            args.config_path,
+            args.gpt_ckpt_path,
+            args.shape_ckpt_path,
+            device=device,
+            torch_compile=args.torch_compile,
         )
         print("Compiled the graph.")
     else:
         engine = Engine(
-            args.config_path, args.gpt_ckpt_path, args.shape_ckpt_path, device=device
+            args.config_path,
+            args.gpt_ckpt_path,
+            args.shape_ckpt_path,
+            device=device,
+            torch_compile=args.torch_compile,
         )
     
     # Generate meshes based on input source
