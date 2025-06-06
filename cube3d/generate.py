@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 
 import torch
@@ -50,7 +51,10 @@ def generate_mesh(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="cube shape generation script")
+    parser = argparse.ArgumentParser(
+        description="cube shape generation script",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--config-path",
         type=str,
@@ -117,8 +121,24 @@ if __name__ == "__main__":
         default=None,
         help="PyTorch compiler backend to use for model compilation (e.g., 'inductor', 'aot_eager'). If not specified, models will not be compiled.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["debug", "info", "warning", "error", "critical"],
+        help="Set the logging level. If not specified, no logging configuration is applied.",
+    )
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Configure logging if log level is specified
+    if args.log_level:
+        logging.basicConfig(
+            level=getattr(logging, args.log_level.upper()),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            force=True,
+        )
+
     device = select_device()
     print(f"Using device: {device}")
     # Initialize engine based on fast_inference flag
