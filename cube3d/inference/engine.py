@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 import torch
 from tqdm import tqdm
@@ -349,6 +350,8 @@ class Engine:
             mesh_v_f: The generated 3D mesh vertices and faces.
         """
         output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
+        logger.info("Stopping early for profiling")
+        sys.exit(0)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             mesh_v_f = self.run_shape_decode(output_ids, resolution_base, chunk_size)
         return mesh_v_f
