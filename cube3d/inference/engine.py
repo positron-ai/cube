@@ -138,8 +138,9 @@ class Engine:
 
         if torch_compile is not None:
             self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
-            self.shape_model = torch.compile(self.shape_model, backend=torch_compile)
-            self.text_model = torch.compile(self.text_model, backend=torch_compile)
+            # Convert only the gpt model for profiling
+            # self.shape_model = torch.compile(self.shape_model, backend=torch_compile)
+            # self.text_model = torch.compile(self.text_model, backend=torch_compile)
 
     @torch.inference_mode()
     def prepare_inputs(self, prompts: list[str], guidance_scale: float):
