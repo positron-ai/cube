@@ -1,3 +1,6 @@
+import logging
+import os
+
 import torch
 from tqdm import tqdm
 from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
@@ -7,6 +10,61 @@ from cube3d.inference.utils import load_config, load_model_weights, parse_struct
 from cube3d.model.autoencoder.one_d_autoencoder import OneDAutoEncoder
 from cube3d.model.gpt.dual_stream_roformer import DualStreamRoformer
 from cube3d.model.transformers.cache import Cache
+
+logger = logging.getLogger(__name__)
+
+# Hacky profiling control
+PROFILE = os.environ.get("CUBE_PROFILE", "")
+assert PROFILE in ["", "torch", "perfetto"]
+
+
+class Profile:
+    def __init__(self, warmup_steps: int = 2, profile_steps: int = 5):
+        self.warmup_steps = warmup_steps
+        self.profile_steps = profile_steps
+        self.step_count = 0
+
+        self.profiler: torch.profiler.profile | None = None
+        if PROFILE == "torch":
+            self.profiler = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU],
+                schedule=torch.profiler.schedule(
+                    warmup=self.warmup_steps,
+                    active=self.profile_steps,
+                    wait=0,
+                    repeat=1,
+                ),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+            )
+
+    def __enter__(self):
+        self.step_count = 0
+        if PROFILE == "torch":
+            self.profiler.__enter__()
+        elif PROFILE == "perfetto":
+            if self.warmup_steps == 0:
+                torch.ops.tron.tracing_start("cube.trace")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if PROFILE == "torch":
+            self.profiler.__exit__(exc_type, exc_value, traceback)
+            self.profiler.export_chrome_trace("cube.json")
+            logger.info("Profiling results saved to cube.json")
+        elif PROFILE == "perfetto":
+            logger.info("Perfetto profiling results saved to cube.trace")
+
+    def step(self):
+        self.step_count += 1
+        if PROFILE == "torch":
+            self.profiler.step()
+        elif PROFILE == "perfetto":
+            if self.step_count == self.warmup_steps:
+                torch.ops.tron.tracing_start("cube.trace")
+            elif self.step_count == self.warmup_steps + self.profile_steps:
+                torch.ops.tron.tracing_stop()
 
 
 class Engine:
@@ -200,7 +258,7 @@ class Engine:
                 torch.bfloat16,
                 embed.device,
             )
-        with torch.autocast(self.device.type, dtype=torch.bfloat16):
+        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile() as prof:
             for i in tqdm(range(self.max_new_tokens), desc=f"generating"):
                 curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
                 logits = self.gpt_model(
@@ -232,6 +290,7 @@ class Engine:
                 if guidance_scale > 0.0:
                     next_embed = torch.cat([next_embed, next_embed], dim=0)
                 embed_buffer[:, i + input_seq_len, :].copy_(next_embed.squeeze(1))
+                prof.step()
 
         return torch.cat(output_ids, dim=1)
 
