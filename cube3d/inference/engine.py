@@ -36,7 +36,7 @@ class Profile:
                     repeat=1,
                 ),
                 record_shapes=True,
-                profile_memory=True,
+                profile_memory=False,
                 with_stack=True,
             )
 
