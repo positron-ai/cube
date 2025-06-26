@@ -20,7 +20,7 @@ assert PROFILE in ["", "torch", "perfetto"]
 
 
 class Profile:
-    def __init__(self, warmup_steps: int = 2, profile_steps: int = 5):
+    def __init__(self, warmup_steps: int = 250, profile_steps: int = 5):
         self.warmup_steps = warmup_steps
         self.profile_steps = profile_steps
         self.step_count = 0
