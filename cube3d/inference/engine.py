@@ -228,6 +228,7 @@ class Engine:
         use_kv_cache: bool,
         guidance_scale: float = 3.0,
         top_p: float = None,
+        num_loops: int = 1,
     ):
         """
         Generates text using a GPT model based on the provided prompts.
@@ -237,19 +238,17 @@ class Engine:
             guidance_scale (float, optional): The scale for guidance during generation. Default is 3.0.
             top_p (float, optional): The cumulative probability threshold for nucleus sampling.
             If None, argmax selection is performed (deterministic generation). Otherwise, smallest set of tokens with cumulative probability ≥ top_p are kept (stochastic generation).
+            num_loops (int, optional): Number of times to run the core workload loop for profiling. Default is 1.
         Returns:
-            torch.Tensor: A tensor containing the generated token IDs.
+            torch.Tensor: A tensor containing the generated token IDs from the last run.
         """
         embed, cond = self.prepare_inputs(prompts, guidance_scale)
-
-        output_ids = []
 
         batch_size, input_seq_len, dim = embed.shape
         max_seq_len = input_seq_len + self.max_new_tokens
         embed_buffer = torch.zeros(
             (batch_size, max_seq_len, dim), dtype=embed.dtype, device=embed.device
         )
-        embed_buffer[:, :input_seq_len, :].copy_(embed)
         cond_len = cond.shape[1]
         kv_cache = None
         if use_kv_cache:
@@ -260,41 +259,68 @@ class Engine:
                 torch.bfloat16,
                 embed.device,
             )
+
+        output_ids = None
+
         with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile() as prof:
-            for i in tqdm(range(self.max_new_tokens), desc=f"generating"):
-                curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
-                logits = self.gpt_model(
-                    embed_buffer,
-                    cond,
-                    kv_cache=kv_cache,
-                    curr_pos_id=curr_pos_id if use_kv_cache else None,
-                    decode=(i > 0) if use_kv_cache else False,
-                )
-                if use_kv_cache:
-                    logits = logits[:, 0, ...]
-                else:
-                    logits = logits[:, i, ...]
+            for loop_idx in range(num_loops):
+                # Reset state for each loop iteration
+                embed_buffer.zero_()
+                embed_buffer[:, :input_seq_len, :].copy_(embed)
+                if use_kv_cache and kv_cache is not None:
+                    # Reset KV cache for each iteration
+                    for cache in kv_cache:
+                        cache.key_states.zero_()
+                        cache.value_states.zero_()
 
-                logits = logits[..., self.min_id : self.max_id]
+                # Only collect outputs on the final loop iteration
+                is_final_loop = (loop_idx == num_loops - 1)
+                loop_output_ids = [] if is_final_loop else None
 
-                if guidance_scale > 0.0:
-                    logits, uncond_logits = logits.float().chunk(2, dim=0)
-                    gamma = (
-                        guidance_scale * (self.max_new_tokens - i) / self.max_new_tokens
+                # Core generation loop
+                desc = f"generating" if num_loops == 1 else f"loop {loop_idx+1}/{num_loops}"
+                for i in tqdm(range(self.max_new_tokens), desc=desc):
+                    curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
+                    logits = self.gpt_model(
+                        embed_buffer,
+                        cond,
+                        kv_cache=kv_cache,
+                        curr_pos_id=curr_pos_id if use_kv_cache else None,
+                        decode=(i > 0) if use_kv_cache else False,
                     )
-                    logits = (1 + gamma) * logits - gamma * uncond_logits
-                next_id = process_logits(
-                    logits,
-                    top_p=top_p,
-                )
-                output_ids.append(next_id)
-                next_embed = self.gpt_model.encode_token(next_id)
-                if guidance_scale > 0.0:
-                    next_embed = torch.cat([next_embed, next_embed], dim=0)
-                embed_buffer[:, i + input_seq_len, :].copy_(next_embed.squeeze(1))
-                prof.step()
+                    if use_kv_cache:
+                        logits = logits[:, 0, ...]
+                    else:
+                        logits = logits[:, i, ...]
 
-        return torch.cat(output_ids, dim=1)
+                    logits = logits[..., self.min_id : self.max_id]
+
+                    if guidance_scale > 0.0:
+                        logits, uncond_logits = logits.float().chunk(2, dim=0)
+                        gamma = (
+                            guidance_scale * (self.max_new_tokens - i) / self.max_new_tokens
+                        )
+                        logits = (1 + gamma) * logits - gamma * uncond_logits
+                    next_id = process_logits(
+                        logits,
+                        top_p=top_p,
+                    )
+
+                    # Only store outputs on final loop
+                    if is_final_loop:
+                        loop_output_ids.append(next_id)
+
+                    next_embed = self.gpt_model.encode_token(next_id)
+                    if guidance_scale > 0.0:
+                        next_embed = torch.cat([next_embed, next_embed], dim=0)
+                    embed_buffer[:, i + input_seq_len, :].copy_(next_embed.squeeze(1))
+                    prof.step()
+
+                # Only concatenate outputs on final loop
+                if is_final_loop:
+                    output_ids = torch.cat(loop_output_ids, dim=1)
+
+        return output_ids
 
     @torch.inference_mode()
     def run_shape_decode(
@@ -335,6 +361,7 @@ class Engine:
         resolution_base: float = 8.0,
         chunk_size: int = 100_000,
         top_p: float = None,
+        num_loops: int = 1,
     ):
         """
         Generates a 3D mesh from text prompts using a GPT model and shape decoder.
@@ -346,12 +373,11 @@ class Engine:
             chunk_size (int, optional): The chunk size for processing the shape decoding. Default is 100,000.
             top_p (float, optional): The cumulative probability threshold for nucleus sampling. 
                                     If None, argmax selection is performed (deterministic generation). Otherwise, smallest set of tokens with cumulative probability ≥ top_p are kept (stochastic generation).
+            num_loops (int, optional): This parameter is ignored in this engine, but accepted for API compatibility.
         Returns:
             mesh_v_f: The generated 3D mesh vertices and faces.
         """
-        output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
-        logger.info("Stopping early for profiling")
-        sys.exit(0)
+        output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p, num_loops)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             mesh_v_f = self.run_shape_decode(output_ids, resolution_base, chunk_size)
         return mesh_v_f
