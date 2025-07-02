@@ -14,59 +14,6 @@ from cube3d.model.transformers.cache import Cache
 
 logger = logging.getLogger(__name__)
 
-# Hacky profiling control
-PROFILE = os.environ.get("CUBE_PROFILE", "")
-assert PROFILE in ["", "torch", "perfetto"]
-
-
-class Profile:
-    def __init__(self, warmup_steps: int = 250, profile_steps: int = 5):
-        self.warmup_steps = warmup_steps
-        self.profile_steps = profile_steps
-        self.step_count = 0
-
-        self.profiler: torch.profiler.profile | None = None
-        if PROFILE == "torch":
-            self.profiler = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU],
-                schedule=torch.profiler.schedule(
-                    warmup=self.warmup_steps,
-                    active=self.profile_steps,
-                    wait=0,
-                    repeat=1,
-                ),
-                record_shapes=True,
-                profile_memory=False,
-                with_stack=True,
-            )
-
-    def __enter__(self):
-        self.step_count = 0
-        if PROFILE == "torch":
-            self.profiler.__enter__()
-        elif PROFILE == "perfetto":
-            if self.warmup_steps == 0:
-                torch.ops.tron.tracing_start("cube.trace")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if PROFILE == "torch":
-            self.profiler.__exit__(exc_type, exc_value, traceback)
-            self.profiler.export_chrome_trace("cube.json")
-            logger.info("Profiling results saved to cube.json")
-        elif PROFILE == "perfetto":
-            logger.info("Perfetto profiling results saved to cube.trace")
-
-    def step(self):
-        self.step_count += 1
-        if PROFILE == "torch":
-            self.profiler.step()
-        elif PROFILE == "perfetto":
-            if self.step_count == self.warmup_steps:
-                torch.ops.tron.tracing_start("cube.trace")
-            elif self.step_count == self.warmup_steps + self.profile_steps:
-                torch.ops.tron.tracing_stop()
-
 
 class Engine:
     def __init__(
@@ -138,10 +85,12 @@ class Engine:
         self.max_id = self.shape_model.cfg.num_codes
 
         if torch_compile is not None:
-            self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
-            # Convert only the gpt model for profiling
-            # self.shape_model = torch.compile(self.shape_model, backend=torch_compile)
+            # Convert only a subset of models for profiling
             # self.text_model = torch.compile(self.text_model, backend=torch_compile)
+            self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
+            self.shape_model.decode_indices = torch.compile(
+                self.shape_model.decode_indices, backend=torch_compile
+            )
 
     @torch.inference_mode()
     def prepare_inputs(self, prompts: list[str], guidance_scale: float):
@@ -260,7 +209,9 @@ class Engine:
                 torch.bfloat16,
                 embed.device,
             )
-        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile() as prof:
+        from trontorch.profiling import Profile
+
+        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile("cube.gpt") as prof:
             for i in tqdm(range(self.max_new_tokens), desc=f"generating"):
                 curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
                 logits = self.gpt_model(
@@ -350,8 +301,6 @@ class Engine:
             mesh_v_f: The generated 3D mesh vertices and faces.
         """
         output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
-        logger.info("Stopping early for profiling")
-        sys.exit(0)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             mesh_v_f = self.run_shape_decode(output_ids, resolution_base, chunk_size)
         return mesh_v_f

@@ -276,9 +276,12 @@ class OneDDecoder(nn.Module):
         Returns:
             torch.Tensor: The output tensor after applying all blocks sequentially.
         """
+        import trontorch.profiling
 
-        for block in self.blocks:
-            h = block(h)
+        with trontorch.profiling.Profile("cube.shape", warmup_steps=2, profile_steps=5) as prof:
+            for block in self.blocks:
+                h = block(h)
+                prof.step()
         return h
 
     def forward(self, z):
