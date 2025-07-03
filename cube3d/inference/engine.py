@@ -189,7 +189,7 @@ class Engine:
             If None, argmax selection is performed (deterministic generation). Otherwise, smallest set of tokens with cumulative probability ≥ top_p are kept (stochastic generation).
             num_loops (int, optional): Number of times to run the core workload loop for profiling. Default is 1.
         Returns:
-            torch.Tensor: A tensor containing the generated token IDs from the last run.
+            torch.Tensor: A tensor containing the generated token IDs.
         """
         embed, cond = self.prepare_inputs(prompts, guidance_scale)
 
