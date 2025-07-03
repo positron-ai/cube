@@ -277,13 +277,16 @@ class Engine:
             guidance_scale (float, optional): The scale of guidance for the GPT model. Default is 3.0.
             resolution_base (float, optional): The base resolution for the shape decoder. Default is 8.0.
             chunk_size (int, optional): The chunk size for processing the shape decoding. Default is 100,000.
-            top_p (float, optional): The cumulative probability threshold for nucleus sampling. 
+            top_p (float, optional): The cumulative probability threshold for nucleus sampling.
                                     If None, argmax selection is performed (deterministic generation). Otherwise, smallest set of tokens with cumulative probability ≥ top_p are kept (stochastic generation).
-            num_loops (int, optional): This parameter is ignored in this engine, but accepted for API compatibility.
+            num_loops (int, optional): Number of times to run the core gpt workload.
         Returns:
             mesh_v_f: The generated 3D mesh vertices and faces.
         """
-        output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
+        output_ids = None
+        for _ in range(num_loops):
+            output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
+
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             mesh_v_f = self.run_shape_decode(output_ids, resolution_base, chunk_size)
         return mesh_v_f
@@ -432,9 +435,9 @@ class EngineFast(Engine):
         )
 
     def run_gpt(
-        self, 
-        prompts: list[str], 
-        use_kv_cache: bool, 
+        self,
+        prompts: list[str],
+        use_kv_cache: bool,
         guidance_scale: float = 3.0,
         top_p: float = None
     ):
