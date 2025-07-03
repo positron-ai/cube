@@ -23,12 +23,14 @@ def generate_mesh(
     resolution_base=8.0,
     disable_postprocess=False,
     top_p=None,
+    num_loops=1,
 ):
     mesh_v_f = engine.t2s(
         [prompt],
         use_kv_cache=True,
         resolution_base=resolution_base,
         top_p=top_p,
+        num_loops=num_loops,
     )
     vertices, faces = mesh_v_f[0][0], mesh_v_f[0][1]
     obj_path = os.path.join(output_dir, f"{output_name}.obj")
@@ -128,6 +130,12 @@ if __name__ == "__main__":
         choices=["debug", "info", "warning", "error", "critical"],
         help="Set the logging level. If not specified, no logging configuration is applied.",
     )
+    parser.add_argument(
+        "--num-loops",
+        type=int,
+        default=1,
+        help="Number of times to run the core workload loop for profiling. Default is 1 (no looping).",
+    )
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -172,6 +180,7 @@ if __name__ == "__main__":
         args.resolution_base,
         args.disable_postprocessing,
         args.top_p,
+        args.num_loops,
     )
     if args.render_gif:
         gif_path = renderer.render_turntable(obj_path, args.output_dir)
