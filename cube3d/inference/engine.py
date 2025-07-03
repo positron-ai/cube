@@ -14,59 +14,6 @@ from cube3d.model.transformers.cache import Cache
 
 logger = logging.getLogger(__name__)
 
-# Hacky profiling control
-PROFILE = os.environ.get("CUBE_PROFILE", "")
-assert PROFILE in ["", "torch", "perfetto"]
-
-
-class Profile:
-    def __init__(self, warmup_steps: int = 250, profile_steps: int = 5):
-        self.warmup_steps = warmup_steps
-        self.profile_steps = profile_steps
-        self.step_count = 0
-
-        self.profiler: torch.profiler.profile | None = None
-        if PROFILE == "torch":
-            self.profiler = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU],
-                schedule=torch.profiler.schedule(
-                    warmup=self.warmup_steps,
-                    active=self.profile_steps,
-                    wait=0,
-                    repeat=1,
-                ),
-                record_shapes=True,
-                profile_memory=False,
-                with_stack=True,
-            )
-
-    def __enter__(self):
-        self.step_count = 0
-        if PROFILE == "torch":
-            self.profiler.__enter__()
-        elif PROFILE == "perfetto":
-            if self.warmup_steps == 0:
-                torch.ops.tron.tracing_start("cube.trace")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if PROFILE == "torch":
-            self.profiler.__exit__(exc_type, exc_value, traceback)
-            self.profiler.export_chrome_trace("cube.json")
-            logger.info("Profiling results saved to cube.json")
-        elif PROFILE == "perfetto":
-            logger.info("Perfetto profiling results saved to cube.trace")
-
-    def step(self):
-        self.step_count += 1
-        if PROFILE == "torch":
-            self.profiler.step()
-        elif PROFILE == "perfetto":
-            if self.step_count == self.warmup_steps:
-                torch.ops.tron.tracing_start("cube.trace")
-            elif self.step_count == self.warmup_steps + self.profile_steps:
-                torch.ops.tron.tracing_stop()
-
 
 class Engine:
     def __init__(
@@ -138,10 +85,12 @@ class Engine:
         self.max_id = self.shape_model.cfg.num_codes
 
         if torch_compile is not None:
-            self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
-            # Convert only the gpt model for profiling
-            # self.shape_model = torch.compile(self.shape_model, backend=torch_compile)
+            # Convert only a subset of models for profiling
             # self.text_model = torch.compile(self.text_model, backend=torch_compile)
+            self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
+            self.shape_model.decode_indices = torch.compile(
+                self.shape_model.decode_indices, backend=torch_compile
+            )
 
     @torch.inference_mode()
     def prepare_inputs(self, prompts: list[str], guidance_scale: float):
@@ -259,67 +208,24 @@ class Engine:
                 torch.bfloat16,
                 embed.device,
             )
+        from trontorch.profiling import Profile
+
+        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile("cube.gpt") as prof:
+            for i in tqdm(range(self.max_new_tokens), desc=f"generating"):
+                curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
+                logits = self.gpt_model(
+                    embed_buffer,
+                    cond,
+                    kv_cache=kv_cache,
+                    curr_pos_id=curr_pos_id if use_kv_cache else None,
+                    decode=(i > 0) if use_kv_cache else False,
+                )
+                if use_kv_cache:
+                    logits = logits[:, 0, ...]
+                else:
+                    logits = logits[:, i, ...]
 
         output_ids = None
-
-        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile() as prof:
-            for loop_idx in range(num_loops):
-                # Reset state for each loop iteration
-                embed_buffer.zero_()
-                embed_buffer[:, :input_seq_len, :].copy_(embed)
-                if use_kv_cache and kv_cache is not None:
-                    # Reset KV cache for each iteration
-                    for cache in kv_cache:
-                        cache.key_states.zero_()
-                        cache.value_states.zero_()
-
-                # Only collect outputs on the final loop iteration
-                is_final_loop = (loop_idx == num_loops - 1)
-                loop_output_ids = [] if is_final_loop else None
-
-                # Core generation loop
-                desc = f"generating" if num_loops == 1 else f"loop {loop_idx+1}/{num_loops}"
-                for i in tqdm(range(self.max_new_tokens), desc=desc):
-                    curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
-                    logits = self.gpt_model(
-                        embed_buffer,
-                        cond,
-                        kv_cache=kv_cache,
-                        curr_pos_id=curr_pos_id if use_kv_cache else None,
-                        decode=(i > 0) if use_kv_cache else False,
-                    )
-                    if use_kv_cache:
-                        logits = logits[:, 0, ...]
-                    else:
-                        logits = logits[:, i, ...]
-
-                    logits = logits[..., self.min_id : self.max_id]
-
-                    if guidance_scale > 0.0:
-                        logits, uncond_logits = logits.float().chunk(2, dim=0)
-                        gamma = (
-                            guidance_scale * (self.max_new_tokens - i) / self.max_new_tokens
-                        )
-                        logits = (1 + gamma) * logits - gamma * uncond_logits
-                    next_id = process_logits(
-                        logits,
-                        top_p=top_p,
-                    )
-
-                    # Only store outputs on final loop
-                    if is_final_loop:
-                        loop_output_ids.append(next_id)
-
-                    next_embed = self.gpt_model.encode_token(next_id)
-                    if guidance_scale > 0.0:
-                        next_embed = torch.cat([next_embed, next_embed], dim=0)
-                    embed_buffer[:, i + input_seq_len, :].copy_(next_embed.squeeze(1))
-                    prof.step()
-
-                # Only concatenate outputs on final loop
-                if is_final_loop:
-                    output_ids = torch.cat(loop_output_ids, dim=1)
-
         return output_ids
 
     @torch.inference_mode()
@@ -377,7 +283,7 @@ class Engine:
         Returns:
             mesh_v_f: The generated 3D mesh vertices and faces.
         """
-        output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p, num_loops)
+        output_ids = self.run_gpt(prompts, use_kv_cache, guidance_scale, top_p)
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             mesh_v_f = self.run_shape_decode(output_ids, resolution_base, chunk_size)
         return mesh_v_f

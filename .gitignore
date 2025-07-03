@@ -176,7 +176,7 @@ outputs/
 model_weights/
 
 # Profiling outputs
-cube.json
-cube.trace
-cube.log
-cube.txt
+cube*.json
+cube*.trace
+cube*.log
+cube*.txt
