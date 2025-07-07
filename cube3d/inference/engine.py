@@ -5,6 +5,7 @@ import sys
 import torch
 from tqdm import tqdm
 from transformers import CLIPTextModelWithProjection, CLIPTokenizerFast
+from trontorch.profiling import Profile
 
 from cube3d.inference.logits_postprocesses import process_logits
 from cube3d.inference.utils import load_config, load_model_weights, parse_structured
@@ -85,11 +86,15 @@ class Engine:
         self.max_id = self.shape_model.cfg.num_codes
 
         if torch_compile is not None:
-            # Convert only a subset of models for profiling
+            # Don't bother compiling the clip text_model as it's small
             # self.text_model = torch.compile(self.text_model, backend=torch_compile)
             self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
+            # Compile the bottleneck methods of the shape_model
             self.shape_model.decode_indices = torch.compile(
                 self.shape_model.decode_indices, backend=torch_compile
+            )
+            self.shape_model.query = torch.compile(
+                self.shape_model.query, backend=torch_compile
             )
 
     @torch.inference_mode()
@@ -209,10 +214,10 @@ class Engine:
                 torch.bfloat16,
                 embed.device,
             )
-        from trontorch.profiling import Profile
 
-        with torch.autocast(self.device.type, dtype=torch.bfloat16), Profile("cube.gpt") as prof:
-            for i in tqdm(range(self.max_new_tokens), desc=f"generating"):
+        with torch.autocast(self.device.type, dtype=torch.bfloat16):
+            profile = Profile("cube.gpt", warmup_steps=2, profile_steps=5)
+            for i in profile(tqdm(range(self.max_new_tokens), desc="generating")):
                 curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
                 logits = self.gpt_model(
                     embed_buffer,
@@ -243,7 +248,6 @@ class Engine:
                 if guidance_scale > 0.0:
                     next_embed = torch.cat([next_embed, next_embed], dim=0)
                 embed_buffer[:, i + input_seq_len, :].copy_(next_embed.squeeze(1))
-                prof.step()
 
         return torch.cat(output_ids, dim=1)
 

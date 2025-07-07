@@ -10,6 +10,7 @@ import torch.nn as nn
 from skimage import measure
 from torch.nn import functional as F
 from tqdm import tqdm
+from trontorch.profiling import Profile
 
 from cube3d.model.autoencoder.embedder import PhaseModulatedFourierEmbedder
 from cube3d.model.autoencoder.grid import (
@@ -276,12 +277,9 @@ class OneDDecoder(nn.Module):
         Returns:
             torch.Tensor: The output tensor after applying all blocks sequentially.
         """
-        import trontorch.profiling
-
-        with trontorch.profiling.Profile("cube.shape", warmup_steps=2, profile_steps=5) as prof:
-            for block in self.blocks:
-                h = block(h)
-                prof.step()
+        profilie = Profile("cube.shape", warmup_steps=2, profile_steps=5)
+        for block in profilie(self.blocks):
+            h = block(h)
         return h
 
     def forward(self, z):
@@ -638,7 +636,8 @@ class OneDAutoEncoder(nn.Module):
             desc=f"extracting geometry",
             unit="chunk",
         )
-        for start in progress_bar:
+        profile = Profile("cube.extract", warmup_steps=2, profile_steps=5)
+        for start in profile(progress_bar):
             queries = xyz_samples[start : start + chunk_size, :]
 
             num_queries = queries.shape[0]
