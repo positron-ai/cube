@@ -277,11 +277,8 @@ class OneDDecoder(nn.Module):
         Returns:
             torch.Tensor: The output tensor after applying all blocks sequentially.
         """
-        # TODO enable this after fixing the following error:
-        # DecomplexifyError: Cannot determine dtype for node 'add'. Meta keys: ['stack_trace', 'source_fn_stack', 'from_node', 'seq_nr', 'val']. This node must have dtype information for validation.
-        # profile = Profile("cube.shape", warmup_steps=2, profile_steps=5)
-        # for block in profile(self.blocks):
-        for block in self.blocks:
+        profile = Profile("cube.shape", warmup_steps=2, profile_steps=5)
+        for block in profile(self.blocks):
             h = block(h)
         return h
 

@@ -90,9 +90,11 @@ class Engine:
             # self.text_model = torch.compile(self.text_model, backend=torch_compile)
             self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
             # Compile the bottleneck methods of the shape_model
-            self.shape_model.decode_indices = torch.compile(
-                self.shape_model.decode_indices, backend=torch_compile
-            )
+            # FIXME this fails with
+            # DecomplexifyError: Cannot determine dtype for node 'add'. Meta keys: ['stack_trace', 'source_fn_stack', 'from_node', 'seq_nr', 'val']. This node must have dtype information for validation.
+            # self.shape_model.decode_indices = torch.compile(
+            #     self.shape_model.decode_indices, backend=torch_compile
+            # )
             self.shape_model.query = torch.compile(
                 self.shape_model.query, backend=torch_compile
             )
