@@ -88,6 +88,7 @@ class Engine:
         if torch_compile is not None:
             # Don't bother compiling the clip text_model as it's small
             # self.text_model = torch.compile(self.text_model, backend=torch_compile)
+            self.gpt_model.transformer.to(dtype=torch.bfloat16)
             self.gpt_model = torch.compile(self.gpt_model, backend=torch_compile)
             # Compile the bottleneck methods of the shape_model
             # FIXME this fails with
