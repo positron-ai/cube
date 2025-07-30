@@ -6,7 +6,7 @@ import torch
 import trimesh
 
 from cube3d.inference.engine import Engine, EngineFast
-from cube3d.inference.utils import select_device
+from cube3d.inference.utils import normalize_bbox, select_device
 from cube3d.mesh_utils.postprocessing import (
     PYMESHLAB_AVAILABLE,
     create_pymeshset,
@@ -14,6 +14,7 @@ from cube3d.mesh_utils.postprocessing import (
     save_mesh,
 )
 from cube3d.renderer import renderer
+
 
 def generate_mesh(
     engine,
@@ -23,6 +24,7 @@ def generate_mesh(
     resolution_base=8.0,
     disable_postprocess=False,
     top_p=None,
+    bounding_box_xyz=None,
     num_loops=1,
 ):
     mesh_v_f = engine.t2s(
@@ -30,6 +32,7 @@ def generate_mesh(
         use_kv_cache=True,
         resolution_base=resolution_base,
         top_p=top_p,
+        bounding_box_xyz=bounding_box_xyz,
         num_loops=num_loops,
     )
     vertices, faces = mesh_v_f[0][0], mesh_v_f[0][1]
@@ -60,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config-path",
         type=str,
-        default="cube3d/configs/open_model.yaml",
+        default="cube3d/configs/open_model_v0.5.yaml",
         help="Path to the configuration YAML file.",
     )
     parser.add_argument(
@@ -98,6 +101,14 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="Float < 1: Keep smallest set of tokens with cumulative probability ≥ top_p. Default None: deterministic generation.",
+    )
+    parser.add_argument(
+        "--bounding-box-xyz",
+        nargs=3,
+        type=float,
+        help="Three float values for x, y, z bounding box",
+        default=None,
+        required=False,
     )
     parser.add_argument(
         "--render-gif",
@@ -170,7 +181,10 @@ if __name__ == "__main__":
             device=device,
             torch_compile=args.torch_compile,
         )
-    
+
+    if args.bounding_box_xyz is not None:
+        args.bounding_box_xyz = normalize_bbox(tuple(args.bounding_box_xyz))
+
     # Generate meshes based on input source
     obj_path = generate_mesh(
         engine,
@@ -180,6 +194,7 @@ if __name__ == "__main__":
         args.resolution_base,
         args.disable_postprocessing,
         args.top_p,
+        args.bounding_box_xyz,
         args.num_loops,
     )
     if args.render_gif:
