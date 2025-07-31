@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Optional, Tuple
 
 import torch
@@ -274,6 +275,12 @@ class Engine:
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             profile = Profile("cube.gpt", warmup_steps=2, profile_steps=5)
             for i in profile(tqdm(range(self.max_new_tokens), desc="generating")):
+                start_token = 10  # Far enough in to be profiling off the clock
+                if i == start_token: start = time.time()
+                if i == self.max_new_tokens - 1:
+                    dur = time.time() - start
+                    tokens = self.max_new_tokens - 1 - start_token
+                    print(f"Generated {tokens} tokens in {dur} s, {tokens / dur} tok/s")
                 curr_pos_id = torch.tensor([i], dtype=torch.long, device=embed.device)
                 logits = self.gpt_model(
                     embed_buffer,
